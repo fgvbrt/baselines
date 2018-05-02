@@ -232,6 +232,7 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
             logger.logkv("fps", fps)
             logger.logkv("explained_variance", float(ev))
             logger.logkv('eprewmean', safemean([epinfo['r'] for epinfo in epinfobuf]))
+            logger.logkv('eprewmean_exp', safemean([epinfo['r_exp'] for epinfo in epinfobuf]))
             logger.logkv('eplenmean', safemean([epinfo['l'] for epinfo in epinfobuf]))
             logger.logkv('time_elapsed', tnow - tfirststart)
             for (lossval, lossname) in zip(lossvals, model.loss_names):
