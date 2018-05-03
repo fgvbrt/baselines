@@ -16,6 +16,7 @@ def nature_cnn(unscaled_images):
     return activ(fc(h3, 'fc1', nh=512, init_scale=np.sqrt(2)))
 
 class LnLstmPolicy(object):
+    recurrent = True
     def __init__(self, sess, ob_space, ac_space, nbatch, nsteps, nlstm=256, reuse=False):
         nenv = nbatch // nsteps
         nh, nw, nc = ob_space.shape
@@ -56,7 +57,7 @@ class LnLstmPolicy(object):
         self.value = value
 
 class LstmPolicy(object):
-
+    recurrent = True
     def __init__(self, sess, ob_space, ac_space, nbatch, nsteps, nlstm=256, reuse=False):
         nenv = nbatch // nsteps
 
@@ -98,7 +99,7 @@ class LstmPolicy(object):
         self.value = value
 
 class CnnPolicy(object):
-
+    recurrent = False
     def __init__(self, sess, ob_space, ac_space, nbatch, nsteps, reuse=False): #pylint: disable=W0613
         nh, nw, nc = ob_space.shape
         ob_shape = (nbatch, nh, nw, nc)
@@ -130,6 +131,7 @@ class CnnPolicy(object):
         self.value = value
 
 class MlpPolicy(object):
+    recurrent = False
     def __init__(self, sess, ob_space, ac_space, nbatch, nsteps, reuse=False): #pylint: disable=W0613
         ob_shape = (nbatch,) + ob_space.shape
         actdim = ac_space.shape[0]

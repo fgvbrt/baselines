@@ -165,8 +165,13 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
     nenvs = env.num_envs
     ob_space = env.observation_space
     ac_space = env.action_space
-    nbatch = nenvs * nsteps
-    nbatch_train = nbatch // nminibatches
+
+    if policy.recurrent:
+        envsperbatch = max(nenvs // nminibatches, 1)
+        nbatch_train = envsperbatch * nsteps
+    else:
+        nbatch = nenvs * nsteps
+        nbatch_train = nbatch // nminibatches
 
     make_model = lambda : Model(policy=policy, ob_space=ob_space, ac_space=ac_space, nbatch_act=nenvs, nbatch_train=nbatch_train,
                     nsteps=nsteps, ent_coef=ent_coef, vf_coef=vf_coef,
@@ -188,7 +193,6 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
     nupdates = total_timesteps//nbatch
     for update in range(1, nupdates+1):
         assert nbatch % nminibatches == 0
-        nbatch_train = nbatch // nminibatches
         tstart = time.time()
         frac = 1.0 - (update - 1.0) / nupdates
         lrnow = lr(frac)
@@ -196,7 +200,7 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
         obs, returns, masks, actions, values, neglogpacs, states, epinfos = runner.run() #pylint: disable=E0632
         epinfobuf.extend(epinfos)
         mblossvals = []
-        if states is None: # nonrecurrent version
+        if not policy.recurrent: # nonrecurrent version
             inds = np.arange(nbatch)
             for _ in range(noptepochs):
                 np.random.shuffle(inds)
@@ -206,11 +210,9 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
                     slices = (arr[mbinds] for arr in (obs, returns, masks, actions, values, neglogpacs))
                     mblossvals.append(model.train(lrnow, cliprangenow, *slices))
         else: # recurrent version
-            assert nenvs % nminibatches == 0
-            envsperbatch = nenvs // nminibatches
+            # assert nenvs % nminibatches == 0
             envinds = np.arange(nenvs)
             flatinds = np.arange(nenvs * nsteps).reshape(nenvs, nsteps)
-            envsperbatch = nbatch_train // nsteps
             for _ in range(noptepochs):
                 np.random.shuffle(envinds)
                 for start in range(0, nenvs, envsperbatch):
