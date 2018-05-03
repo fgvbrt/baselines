@@ -166,11 +166,11 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
     ob_space = env.observation_space
     ac_space = env.action_space
 
+    nbatch = nenvs * nsteps
     if policy.recurrent:
         envsperbatch = max(nenvs // nminibatches, 1)
         nbatch_train = envsperbatch * nsteps
     else:
-        nbatch = nenvs * nsteps
         nbatch_train = nbatch // nminibatches
 
     make_model = lambda : Model(policy=policy, ob_space=ob_space, ac_space=ac_space, nbatch_act=nenvs, nbatch_train=nbatch_train,
