@@ -173,6 +173,8 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
     else:
         nbatch_train = nbatch // nminibatches
 
+    logger.info("batch size: {}".format(nbatch_train))
+
     make_model = lambda : Model(policy=policy, ob_space=ob_space, ac_space=ac_space, nbatch_act=nenvs, nbatch_train=nbatch_train,
                     nsteps=nsteps, ent_coef=ent_coef, vf_coef=vf_coef,
                     max_grad_norm=max_grad_norm)
