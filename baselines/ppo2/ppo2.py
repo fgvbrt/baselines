@@ -217,8 +217,8 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
             flatinds = np.arange(nenvs * nsteps).reshape(nenvs, nsteps)
             for _ in range(noptepochs):
                 np.random.shuffle(envinds)
-                for start in range(0, nenvs, envsperbatch):
-                    end = start + envsperbatch
+                for end in range(envsperbatch, nenvs, envsperbatch):
+                    start = end - envsperbatch
                     mbenvinds = envinds[start:end]
                     mbflatinds = flatinds[mbenvinds].ravel()
                     slices = (arr[mbflatinds] for arr in (obs, returns, masks, actions, values, neglogpacs))
