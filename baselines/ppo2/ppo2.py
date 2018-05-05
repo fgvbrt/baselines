@@ -47,6 +47,7 @@ class Model(object):
         grads = list(zip(grads, params))
         trainer = tf.train.AdamOptimizer(learning_rate=LR, epsilon=1e-5)
         _train = trainer.apply_gradients(grads)
+        adam_params = trainer.variables()
 
         def train(lr, cliprange, obs, returns, masks, actions, values, neglogpacs, states=None):
             advs = returns - values
@@ -64,14 +65,24 @@ class Model(object):
 
         def save(save_path):
             ps = sess.run(params)
-            joblib.dump(ps, save_path)
+            adam_ps = sess.run(adam_params)
+            joblib.dump({'ps': ps, 'adam_ps': adam_ps}, save_path)
 
-        def load(load_path):
-            loaded_params = joblib.load(load_path)
-            restores = []
-            for p, loaded_p in zip(params, loaded_params):
-                restores.append(p.assign(loaded_p))
-            sess.run(restores)
+        def load(load_path, load_adam=True):
+            def _restore(tensors, vals):
+                restores = []
+                for p, loaded_p in zip(params, loaded_params):
+                    restores.append(p.assign(loaded_p))
+                sess.run(restores)
+
+            d = joblib.load(load_path)
+            loaded_params = d['ps']
+            _restore(params, loaded_params)
+
+            if load_adam:
+                loaded_params = d['adam_ps']
+                _restore(adam_params, loaded_params)
+
             # If you want to load weights, also save/load observation scaling inside VecNormalize
 
         self.train = train
@@ -154,7 +165,7 @@ def constfn(val):
 def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
             vf_coef=0.5,  max_grad_norm=0.5, gamma=0.99, lam=0.95,
             log_interval=10, nminibatches=4, noptepochs=4, cliprange=0.2,
-            save_interval=0, weights_path=None):
+            save_interval=0, weights_path=None, load_adam_stats=True):
 
     if isinstance(lr, float): lr = constfn(lr)
     else: assert callable(lr)
@@ -185,7 +196,7 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
     model = make_model()
 
     if weights_path is not None:
-        model.load(weights_path)
+        model.load(weights_path, load_adam_stats)
 
     runner = Runner(env=env, model=model, nsteps=nsteps, gamma=gamma, lam=lam)
 
