@@ -68,7 +68,7 @@ class Model(object):
             adam_ps = sess.run(adam_params)
             joblib.dump({'ps': ps, 'adam_ps': adam_ps}, save_path)
 
-        def load(load_path, load_adam=True):
+        def load(load_path, adam_stats='none'):
             def _restore(tensors, vals):
                 restores = []
                 for p, loaded_p in zip(tensors, vals):
@@ -79,9 +79,12 @@ class Model(object):
             loaded_params = d['ps']
             _restore(params, loaded_params)
 
-            if load_adam:
+            if adam_stats is {'all', 'weight_stats'}:
                 loaded_params = d['adam_ps']
-                _restore(adam_params, loaded_params)
+                if adam_stats == 'weight_stats':
+                    _restore(adam_params[2:], loaded_params[2:])
+                else:
+                    _restore(adam_params, loaded_params)
 
             # If you want to load weights, also save/load observation scaling inside VecNormalize
 
@@ -165,7 +168,7 @@ def constfn(val):
 def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
             vf_coef=0.5,  max_grad_norm=0.5, gamma=0.99, lam=0.95,
             log_interval=10, nminibatches=4, noptepochs=4, cliprange=0.2,
-            save_interval=0, weights_path=None, load_adam_stats=True):
+            save_interval=0, weights_path=None, adam_stats='all'):
 
     if isinstance(lr, float): lr = constfn(lr)
     else: assert callable(lr)
@@ -196,7 +199,7 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
     model = make_model()
 
     if weights_path is not None:
-        model.load(weights_path, load_adam_stats)
+        model.load(weights_path, adam_stats)
 
     runner = Runner(env=env, model=model, nsteps=nsteps, gamma=gamma, lam=lam)
 
