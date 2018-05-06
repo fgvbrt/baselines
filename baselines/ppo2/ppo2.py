@@ -71,7 +71,7 @@ class Model(object):
         def load(load_path, load_adam=True):
             def _restore(tensors, vals):
                 restores = []
-                for p, loaded_p in zip(params, loaded_params):
+                for p, loaded_p in zip(tensors, vals):
                     restores.append(p.assign(loaded_p))
                 sess.run(restores)
 
