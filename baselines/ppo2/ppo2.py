@@ -8,6 +8,7 @@ from baselines import logger
 from collections import deque
 from baselines.common import explained_variance
 
+
 class Model(object):
     def __init__(self, *, policy, ob_space, ac_space, nbatch_act, nbatch_train,
                 nsteps, ent_coef, vf_coef, max_grad_norm):
@@ -47,6 +48,7 @@ class Model(object):
         grads = list(zip(grads, params))
         trainer = tf.train.AdamOptimizer(learning_rate=LR, epsilon=1e-5)
         _train = trainer.apply_gradients(grads)
+        adam_params = trainer.variables()
 
         def train(lr, cliprange, obs, returns, masks, actions, values, neglogpacs, states=None):
             advs = returns - values
@@ -64,14 +66,27 @@ class Model(object):
 
         def save(save_path):
             ps = sess.run(params)
-            joblib.dump(ps, save_path)
+            adam_ps = sess.run(adam_params)
+            joblib.dump({'ps': ps, 'adam_ps': adam_ps}, save_path)
 
-        def load(load_path):
-            loaded_params = joblib.load(load_path)
-            restores = []
-            for p, loaded_p in zip(params, loaded_params):
-                restores.append(p.assign(loaded_p))
-            sess.run(restores)
+        def load(load_path, adam_stats='none'):
+            def _restore(tensors, vals):
+                restores = []
+                for p, loaded_p in zip(tensors, vals):
+                    restores.append(p.assign(loaded_p))
+                sess.run(restores)
+
+            d = joblib.load(load_path)
+            loaded_params = d['ps']
+            _restore(params, loaded_params)
+
+            if adam_stats is {'all', 'weight_stats'}:
+                loaded_params = d['adam_ps']
+                if adam_stats == 'weight_stats':
+                    _restore(adam_params[2:], loaded_params[2:])
+                else:
+                    _restore(adam_params, loaded_params)
+
             # If you want to load weights, also save/load observation scaling inside VecNormalize
 
         self.train = train
@@ -79,11 +94,11 @@ class Model(object):
         self.act_model = act_model
         self.step = act_model.step
         self.value = act_model.value
-        #self.value_and_neglogp = act_model.value_and_neglogp
         self.initial_state = act_model.initial_state
         self.save = save
         self.load = load
         tf.global_variables_initializer().run(session=sess) #pylint: disable=E1101
+
 
 class Runner(object):
 
@@ -181,6 +196,8 @@ class Runner(object):
         return (*map(sf01, (mb_obs, mb_returns, mb_dones, mb_actions, mb_values, mb_neglogpacs)),
             mb_states, epinfos)
 # obs, returns, masks, actions, values, neglogpacs, states = runner.run()
+
+
 def sf01(arr):
     """
     swap and then flatten axes 0 and 1
@@ -188,15 +205,17 @@ def sf01(arr):
     s = arr.shape
     return arr.swapaxes(0, 1).reshape(s[0] * s[1], *s[2:])
 
+
 def constfn(val):
     def f(_):
         return val
     return f
 
+
 def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
             vf_coef=0.5,  max_grad_norm=0.5, gamma=0.99, lam=0.95,
             log_interval=10, nminibatches=4, noptepochs=4, cliprange=0.2,
-            save_interval=0, weights_path=None, nmixup=1):
+            save_interval=0, weights_path=None, adam_stats='all', nmixup=1):
 
     if isinstance(lr, float): lr = constfn(lr)
     else: assert callable(lr)
@@ -204,7 +223,7 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
     else: assert callable(cliprange)
     total_timesteps = int(total_timesteps)
 
-    nenvs = env.num_envs + nmixup
+    nenvs = env.num_envs
     ob_space = env.observation_space
     ac_space = env.action_space
 
@@ -217,11 +236,10 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
 
     logger.info("batch size: {}".format(nbatch_train))
 
-    make_model = lambda: Model(policy=policy, ob_space=ob_space, ac_space=ac_space, nbatch_act=nenvs-nmixup,
-                               nbatch_train=nbatch_train,
-                               nsteps=nsteps, ent_coef=ent_coef, vf_coef=vf_coef,
-                               max_grad_norm=max_grad_norm)
-
+    make_model = lambda : Model(
+        policy=policy, ob_space=ob_space, ac_space=ac_space,
+        nbatch_act=nenvs, nbatch_train=nbatch_train, nsteps=nsteps,
+        ent_coef=ent_coef, vf_coef=vf_coef, max_grad_norm=max_grad_norm)
     if save_interval and logger.get_dir():
         import cloudpickle
         with open(osp.join(logger.get_dir(), 'make_model.pkl'), 'wb') as fh:
@@ -229,7 +247,7 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
     model = make_model()
 
     if weights_path is not None:
-        model.load(weights_path)
+        model.load(weights_path, adam_stats)
 
     runner = Runner(env=env, model=model, nsteps=nsteps, gamma=gamma, lam=lam, nmixup=nmixup)
 
