@@ -47,7 +47,6 @@ class Model(object):
         grads = list(zip(grads, params))
         trainer = tf.train.AdamOptimizer(learning_rate=LR, epsilon=1e-5)
         _train = trainer.apply_gradients(grads)
-        adam_params = trainer.variables()
 
         def train(lr, cliprange, obs, returns, masks, actions, values, neglogpacs, states=None):
             advs = returns - values
@@ -65,27 +64,14 @@ class Model(object):
 
         def save(save_path):
             ps = sess.run(params)
-            adam_ps = sess.run(adam_params)
-            joblib.dump({'ps': ps, 'adam_ps': adam_ps}, save_path)
+            joblib.dump(ps, save_path)
 
-        def load(load_path, adam_stats='none'):
-            def _restore(tensors, vals):
-                restores = []
-                for p, loaded_p in zip(tensors, vals):
-                    restores.append(p.assign(loaded_p))
-                sess.run(restores)
-
-            d = joblib.load(load_path)
-            loaded_params = d['ps']
-            _restore(params, loaded_params)
-
-            if adam_stats is {'all', 'weight_stats'}:
-                loaded_params = d['adam_ps']
-                if adam_stats == 'weight_stats':
-                    _restore(adam_params[2:], loaded_params[2:])
-                else:
-                    _restore(adam_params, loaded_params)
-
+        def load(load_path):
+            loaded_params = joblib.load(load_path)
+            restores = []
+            for p, loaded_p in zip(params, loaded_params):
+                restores.append(p.assign(loaded_p))
+            sess.run(restores)
             # If you want to load weights, also save/load observation scaling inside VecNormalize
 
         self.train = train
@@ -93,6 +79,7 @@ class Model(object):
         self.act_model = act_model
         self.step = act_model.step
         self.value = act_model.value
+        #self.value_and_neglogp = act_model.value_and_neglogp
         self.initial_state = act_model.initial_state
         self.save = save
         self.load = load
@@ -100,7 +87,7 @@ class Model(object):
 
 class Runner(object):
 
-    def __init__(self, *, env, model, nsteps, gamma, lam):
+    def __init__(self, *, env, model, nsteps, gamma, lam, nmixup):
         self.env = env
         self.model = model
         nenv = env.num_envs
@@ -111,6 +98,8 @@ class Runner(object):
         self.nsteps = nsteps
         self.states = model.initial_state
         self.dones = [False for _ in range(nenv)]
+        self.nmixup = nmixup
+        self.mixup_time = True
 
     def run(self):
         mb_obs, mb_rewards, mb_actions, mb_values, mb_dones, mb_neglogpacs = [],[],[],[],[],[]
@@ -150,6 +139,45 @@ class Runner(object):
             delta = mb_rewards[t] + self.gamma * nextvalues * nextnonterminal - mb_values[t]
             mb_advs[t] = lastgaelam = delta + self.gamma * self.lam * nextnonterminal * lastgaelam
         mb_returns = mb_advs + mb_values
+        # mixup episodes
+        ne = self.env.num_envs
+        for _ in range(self.nmixup):
+            w0 = np.random.beta(5, 1, size=(self.nsteps)).astype(np.float32)
+            m0 = np.random.choice(ne, size=(self.nsteps, 2))
+            m1 = m0[:, 0]
+            m2 = m0[:, 1]
+            i1 = np.arange(self.nsteps)
+            i2 = np.arange(self.nsteps)
+            if self.mixup_time:
+                np.random.shuffle(i1)
+                np.random.shuffle(i2)
+            wo = w0.reshape((-1, 1, 1, 1))
+            mix_obs = np.asarray(wo * mb_obs[i1, m1] + (1 - wo) * mb_obs[i2, m2], dtype=self.obs.dtype)
+            mix_returns = w0 * mb_returns[i1, m1] + (1 - w0) * mb_returns[i2, m2]
+            m3 = np.select([w0 > 0.5, True], [m1, m2])
+            i3 = np.select([w0 > 0.5, True], [i1, i2])
+            mix_dones = mb_dones[i3, m3]
+            mix_actions = mb_actions[i3, m3]
+            mix_values = w0 * mb_values[i1, m1] + (1 - w0) * mb_values[i2, m2]
+            mix_neglogpacs = w0 * mb_neglogpacs[i1, m1] + (1 - w0) * mb_neglogpacs[i2, m2]
+            # evaluate values and neglogpacs for new mixup observations
+            #mix_values = mb_values[i3, m3].copy()
+            #mix_neglogpacs = mb_neglogpacs[i3, m3].copy()
+            # TODO: build independet value and neglogp functions with apropriate batch size
+            #for t in range(0, self.nsteps, ne):
+            #    if t+ne <= self.nsteps:
+            #        mix_v, mix_p = self.model.value_and_neglogp(mix_obs[t:t+ne], mix_actions[t:t+ne])
+            #        mix_values[t:t+ne] = mix_v
+            #        mix_neglogpacs[t:t+ne] = mix_p
+            # insert the mixup episode
+            mb_obs = np.concatenate((mb_obs, mix_obs[:,np.newaxis,:,:,:]), axis=1)
+            mb_returns = np.concatenate((mb_returns, mix_returns[:,np.newaxis]), axis=1)
+            mb_dones = np.concatenate((mb_dones, mix_dones[:,np.newaxis]), axis=1)
+            mb_actions = np.concatenate((mb_actions, mix_actions[:,np.newaxis]), axis=1)
+            mb_values = np.concatenate((mb_values, mix_values[:,np.newaxis]), axis=1)
+            mb_neglogpacs = np.concatenate((mb_neglogpacs, mix_neglogpacs[:,np.newaxis]), axis=1)
+        # TODO: need to fegure out how to mixup rewards
+        #mb_returns = mb_advs + mb_values
         return (*map(sf01, (mb_obs, mb_returns, mb_dones, mb_actions, mb_values, mb_neglogpacs)),
             mb_states, epinfos)
 # obs, returns, masks, actions, values, neglogpacs, states = runner.run()
@@ -168,7 +196,7 @@ def constfn(val):
 def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
             vf_coef=0.5,  max_grad_norm=0.5, gamma=0.99, lam=0.95,
             log_interval=10, nminibatches=4, noptepochs=4, cliprange=0.2,
-            save_interval=0, weights_path=None, adam_stats='all'):
+            save_interval=0, weights_path=None, nmixup=1):
 
     if isinstance(lr, float): lr = constfn(lr)
     else: assert callable(lr)
@@ -176,7 +204,7 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
     else: assert callable(cliprange)
     total_timesteps = int(total_timesteps)
 
-    nenvs = env.num_envs
+    nenvs = env.num_envs + nmixup
     ob_space = env.observation_space
     ac_space = env.action_space
 
@@ -189,9 +217,11 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
 
     logger.info("batch size: {}".format(nbatch_train))
 
-    make_model = lambda : Model(policy=policy, ob_space=ob_space, ac_space=ac_space, nbatch_act=nenvs, nbatch_train=nbatch_train,
-                    nsteps=nsteps, ent_coef=ent_coef, vf_coef=vf_coef,
-                    max_grad_norm=max_grad_norm)
+    make_model = lambda: Model(policy=policy, ob_space=ob_space, ac_space=ac_space, nbatch_act=nenvs-nmixup,
+                               nbatch_train=nbatch_train,
+                               nsteps=nsteps, ent_coef=ent_coef, vf_coef=vf_coef,
+                               max_grad_norm=max_grad_norm)
+
     if save_interval and logger.get_dir():
         import cloudpickle
         with open(osp.join(logger.get_dir(), 'make_model.pkl'), 'wb') as fh:
@@ -199,9 +229,9 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
     model = make_model()
 
     if weights_path is not None:
-        model.load(weights_path, adam_stats)
+        model.load(weights_path)
 
-    runner = Runner(env=env, model=model, nsteps=nsteps, gamma=gamma, lam=lam)
+    runner = Runner(env=env, model=model, nsteps=nsteps, gamma=gamma, lam=lam, nmixup=nmixup)
 
     epinfobuf = deque(maxlen=100)
     tfirststart = time.time()
