@@ -7,6 +7,7 @@ import tensorflow as tf
 from baselines import logger
 from collections import deque
 from baselines.common import explained_variance
+from collections import defaultdict
 
 
 class Model(object):
@@ -64,18 +65,32 @@ class Model(object):
             )[:-1]
         self.loss_names = ['policy_loss', 'value_loss', 'policy_entropy', 'approxkl', 'clipfrac']
 
-        def save(save_path):
+        def get_params():
             ps = sess.run(params)
             adam_ps = sess.run(adam_params)
-            joblib.dump({'ps': ps, 'adam_ps': adam_ps}, save_path)
+            return {'ps': ps, 'adam_ps': adam_ps}
+
+        def save(save_path):
+            joblib.dump(self.get_params(), save_path)
+
+        def _restore(tensors, vals):
+            restores = []
+            for p, loaded_p in zip(tensors, vals):
+                restores.append(p.assign(loaded_p))
+            sess.run(restores)
+
+        def load_dict(d, adam_stats='none'):
+            loaded_params = d['ps']
+            _restore(params, loaded_params)
+
+            if adam_stats is {'all', 'weight_stats'}:
+                loaded_params = d['adam_ps']
+                if adam_stats == 'weight_stats':
+                    _restore(adam_params[2:], loaded_params[2:])
+                else:
+                    _restore(adam_params, loaded_params)
 
         def load(load_path, adam_stats='none'):
-            def _restore(tensors, vals):
-                restores = []
-                for p, loaded_p in zip(tensors, vals):
-                    restores.append(p.assign(loaded_p))
-                sess.run(restores)
-
             d = joblib.load(load_path)
             loaded_params = d['ps']
             _restore(params, loaded_params)
@@ -97,6 +112,8 @@ class Model(object):
         self.initial_state = act_model.initial_state
         self.save = save
         self.load = load
+        self.load_dict = load_dict
+        self.get_params = get_params
         tf.global_variables_initializer().run(session=sess) #pylint: disable=E1101
 
 
@@ -215,7 +232,7 @@ def constfn(val):
 def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
             vf_coef=0.5,  max_grad_norm=0.5, gamma=0.99, lam=0.95,
             log_interval=10, nminibatches=4, noptepochs=4, cliprange=0.2,
-            save_interval=0, weights_path=None, adam_stats='all', nmixup=1):
+            save_interval=0, weights_path=None, adam_stats='all', nmixup=1, weights_choose_eps=10):
 
     if isinstance(lr, float): lr = constfn(lr)
     else: assert callable(lr)
@@ -246,8 +263,18 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
             fh.write(cloudpickle.dumps(make_model))
     model = make_model()
 
+    cur_w = 0
+    choose_weights = False
     if weights_path is not None:
-        model.load(weights_path, adam_stats)
+        if isinstance(weights_path, str):
+            model.load(weights_path, adam_stats)
+        elif isinstance(weights_path, list):
+            cur_w = 0
+            choose_weights = True
+            model.load(weights_path[0], adam_stats)
+            w_res = defaultdict(list)
+            w_params = {}
+
 
     runner = Runner(env=env, model=model, nsteps=nsteps, gamma=gamma, lam=lam, nmixup=nmixup)
 
@@ -255,6 +282,7 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
     tfirststart = time.time()
 
     nupdates = total_timesteps//nbatch
+    skip_first = False
     for update in range(1, nupdates+1):
         assert nbatch % nminibatches == 0
         tstart = time.time()
@@ -287,6 +315,54 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
                     mbstates = states[mbenvinds]
                     mblossvals.append(model.train(lrnow, cliprangenow, *slices, mbstates))
 
+        if choose_weights:
+            # ugly but fast
+            rewards = [epinfo['r'] for epinfo in epinfos if 'r' in epinfo]
+
+            if cur_w == 0:
+                w_res[cur_w].extend(rewards)
+            elif skip_first and len(rewards) > 0:
+                w_res[cur_w].extend(rewards[1:])
+                skip_first = False
+            else:
+                w_res[cur_w].extend(rewards)
+                skip_first = False
+
+            # enough episodes
+            if len(w_res[cur_w]) > weights_choose_eps:
+                # here we will choose best weights
+                w_params[cur_w] = model.get_params()
+                cur_w += 1
+                skip_first = True
+
+                # load next weights
+                if cur_w < len(weights_path):
+                    model.load(weights_path[cur_w], adam_stats)
+
+            # tested all weights, time to choose best
+            if cur_w == len(weights_path):
+                # TODO: may be can choose better criteria
+                def _criteria(rews):
+                    return np.mean(rews)
+
+                best_score = -np.inf
+                best_id = None
+                logger.info(w_res)
+                for i in w_res:
+                    score = _criteria(w_res[i])
+                    if score > best_score:
+                        best_score = score
+                        best_id = i
+
+                assert best_id is not None
+
+                # choose best weights
+                model.load_dict(w_params[best_id])
+
+                # do not enter in this block anymore
+                choose_weights = False
+
+
         lossvals = np.mean(mblossvals, axis=0)
         tnow = time.time()
         fps = int(nbatch / (tnow - tstart))
@@ -311,6 +387,7 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
             print('Saving to', savepath)
             model.save(savepath)
     env.close()
+
 
 def safemean(xs):
     return np.nan if len(xs) == 0 else np.mean(xs)
