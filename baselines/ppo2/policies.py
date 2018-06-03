@@ -3,6 +3,7 @@ import tensorflow as tf
 from baselines.a2c.utils import conv, fc, conv_to_fc, batch_to_seq, seq_to_batch, lstm, lnlstm
 from baselines.common.distributions import make_pdtype
 
+
 def nature_cnn(unscaled_images):
     """
     CNN from Nature paper.
@@ -15,9 +16,54 @@ def nature_cnn(unscaled_images):
     h3 = conv_to_fc(h3)
     return activ(fc(h3, 'fc1', nh=512, init_scale=np.sqrt(2)))
 
+
+def openai_cnn1(unscaled_images):
+    """
+    CNN from Nature paper.
+    """
+    activ = tf.nn.elu
+    h = tf.cast(unscaled_images, tf.float32) / 255.
+    for i in range(4):
+        h = activ(conv(h, 'c_{}'.format(i+1), nf=32, rf=3,
+                       stride=2, pad='SAME', init_scale=np.sqrt(2)))
+
+    h = conv_to_fc(h)
+    return activ(fc(h, 'fc1', nh=256, init_scale=np.sqrt(2)))
+
+
+def openai_cnn2(unscaled_images):
+    """
+    CNN from Nature paper.
+    """
+    activ = tf.nn.elu
+    h = tf.cast(unscaled_images, tf.float32) / 255.
+    for i in range(4):
+        h = activ(conv(h, 'c_{}'.format(i+1), nf=32, rf=6,
+                       stride=2, pad='SAME', init_scale=np.sqrt(2)))
+
+    h = conv_to_fc(h)
+    return activ(fc(h, 'fc1', nh=256, init_scale=np.sqrt(2)))
+
+
+def get_cnn(cnn):
+    if cnn == 'nature':
+        return nature_cnn
+    elif cnn =='openai1':
+        return openai_cnn1
+    elif cnn == 'openai2':
+        return openai_cnn2
+    else:
+        raise ValueError('unknown cnn {}'.format(cnn))
+
+
 class LnLstmPolicy(object):
     recurrent = True
-    def __init__(self, sess, ob_space, ac_space, nbatch, nsteps, nlstm=256, reuse=False):
+
+    def __init__(self, sess, ob_space, ac_space, nbatch, nsteps, nlstm=256, reuse=False,
+                 cnn='nature'):
+
+        cnn = get_cnn(cnn)
+
         nenv = nbatch // nsteps
         nh, nw, nc = ob_space.shape
         ob_shape = (nbatch, nh, nw, nc)
@@ -26,7 +72,7 @@ class LnLstmPolicy(object):
         M = tf.placeholder(tf.float32, [nbatch]) #mask (done t-1)
         S = tf.placeholder(tf.float32, [nenv, nlstm*2]) #states
         with tf.variable_scope("model", reuse=reuse):
-            h = nature_cnn(X)
+            h = cnn(X)
             xs = batch_to_seq(h, nenv, nsteps)
             ms = batch_to_seq(M, nenv, nsteps)
             h5, snew = lnlstm(xs, ms, S, 'lstm1', nh=nlstm)
@@ -56,9 +102,14 @@ class LnLstmPolicy(object):
         self.step = step
         self.value = value
 
+
 class LstmPolicy(object):
     recurrent = True
-    def __init__(self, sess, ob_space, ac_space, nbatch, nsteps, nlstm=256, reuse=False):
+
+    def __init__(self, sess, ob_space, ac_space, nbatch, nsteps, nlstm=256, reuse=False,
+                 cnn='nature'):
+        cnn = get_cnn(cnn)
+
         nenv = nbatch // nsteps
 
         nh, nw, nc = ob_space.shape
@@ -68,7 +119,7 @@ class LstmPolicy(object):
         M = tf.placeholder(tf.float32, [nbatch]) #mask (done t-1)
         S = tf.placeholder(tf.float32, [nenv, nlstm*2]) #states
         with tf.variable_scope("model", reuse=reuse):
-            h = nature_cnn(X)
+            h = cnn(X)
             xs = batch_to_seq(h, nenv, nsteps)
             ms = batch_to_seq(M, nenv, nsteps)
             h5, snew = lstm(xs, ms, S, 'lstm1', nh=nlstm)
@@ -98,15 +149,21 @@ class LstmPolicy(object):
         self.step = step
         self.value = value
 
+
 class CnnPolicy(object):
     recurrent = False
-    def __init__(self, sess, ob_space, ac_space, nbatch, nsteps, reuse=False): #pylint: disable=W0613
+
+    def __init__(self, sess, ob_space, ac_space, nbatch, nsteps, reuse=False,
+                 cnn='nature'): #pylint: disable=W0613
+
+        cnn = get_cnn(cnn)
+
         nh, nw, nc = ob_space.shape
         ob_shape = (nbatch, nh, nw, nc)
         nact = ac_space.n
         X = tf.placeholder(tf.uint8, ob_shape) #obs
         with tf.variable_scope("model", reuse=reuse):
-            h = nature_cnn(X)
+            h = cnn(X)
             pi = fc(h, 'pi', nact, init_scale=0.01)
             vf = fc(h, 'v', 1)[:,0]
 
@@ -129,6 +186,7 @@ class CnnPolicy(object):
         self.vf = vf
         self.step = step
         self.value = value
+
 
 class MlpPolicy(object):
     recurrent = False

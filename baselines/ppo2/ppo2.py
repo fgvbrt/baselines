@@ -12,11 +12,11 @@ from collections import defaultdict
 
 class Model(object):
     def __init__(self, *, policy, ob_space, ac_space, nbatch_act, nbatch_train,
-                nsteps, ent_coef, vf_coef, max_grad_norm):
+                nsteps, ent_coef, vf_coef, max_grad_norm, cnn):
         sess = tf.get_default_session()
 
-        act_model = policy(sess, ob_space, ac_space, nbatch_act, 1, reuse=False)
-        train_model = policy(sess, ob_space, ac_space, nbatch_train, nsteps, reuse=True)
+        act_model = policy(sess, ob_space, ac_space, nbatch_act, 1, reuse=False, cnn=cnn)
+        train_model = policy(sess, ob_space, ac_space, nbatch_train, nsteps, reuse=True, cnn=cnn)
 
         A = train_model.pdtype.sample_placeholder([None])
         ADV = tf.placeholder(tf.float32, [None])
@@ -232,7 +232,8 @@ def constfn(val):
 def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
             vf_coef=0.5,  max_grad_norm=0.5, gamma=0.99, lam=0.95,
             log_interval=10, nminibatches=4, noptepochs=4, cliprange=0.2,
-            save_interval=0, weights_path=None, adam_stats='all', nmixup=1, weights_choose_eps=10):
+            save_interval=0, weights_path=None, adam_stats='all', nmixup=1,
+            weights_choose_eps=10, cnn='cnn'):
 
     if isinstance(lr, float): lr = constfn(lr)
     else: assert callable(lr)
@@ -254,9 +255,9 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
     logger.info("batch size: {}".format(nbatch_train))
 
     make_model = lambda : Model(
-        policy=policy, ob_space=ob_space, ac_space=ac_space,
-        nbatch_act=nenvs, nbatch_train=nbatch_train, nsteps=nsteps,
-        ent_coef=ent_coef, vf_coef=vf_coef, max_grad_norm=max_grad_norm)
+        policy=policy, ob_space=ob_space, ac_space=ac_space, nbatch_act=nenvs,
+        nbatch_train=nbatch_train, nsteps=nsteps, ent_coef=ent_coef,
+        vf_coef=vf_coef, max_grad_norm=max_grad_norm, cnn=cnn)
     if save_interval and logger.get_dir():
         import cloudpickle
         with open(osp.join(logger.get_dir(), 'make_model.pkl'), 'wb') as fh:
