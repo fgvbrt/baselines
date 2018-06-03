@@ -51,10 +51,10 @@ class Model(object):
         _train = trainer.apply_gradients(grads)
         adam_params = trainer.variables()
 
-        def train(lr, cliprange, obs, returns, masks, actions, values, neglogpacs, states=None):
+        def train(lr, cliprange, obs, obs2, returns, masks, actions, values, neglogpacs, states=None):
             advs = returns - values
             advs = (advs - advs.mean()) / (advs.std() + 1e-8)
-            td_map = {train_model.X:obs, A:actions, ADV:advs, R:returns, LR:lr,
+            td_map = {train_model.X:obs, train_model.X2:obs2, A:actions, ADV:advs, R:returns, LR:lr,
                     CLIPRANGE:cliprange, OLDNEGLOGPAC:neglogpacs, OLDVPRED:values}
             if states is not None:
                 td_map[train_model.S] = states
@@ -123,8 +123,14 @@ class Runner(object):
         self.env = env
         self.model = model
         nenv = env.num_envs
-        self.obs = np.zeros((nenv,) + env.observation_space.shape, dtype=model.train_model.X.dtype.name)
-        self.obs[:] = env.reset()
+
+        self.obs = np.zeros((nenv,) + env.observation_space[0].shape, dtype=model.train_model.X.dtype.name)
+        self.obs2 = np.zeros((nenv,) + env.observation_space[1].shape, dtype=model.train_model.X2.dtype.name)
+
+        tmp = env.reset()
+        self.obs[:] = tmp[:, 0].tolist()
+        self.obs2[:] = tmp[:, 1].tolist()
+
         self.gamma = gamma
         self.lam = lam
         self.nsteps = nsteps
@@ -135,28 +141,35 @@ class Runner(object):
 
     def run(self):
         mb_obs, mb_rewards, mb_actions, mb_values, mb_dones, mb_neglogpacs = [],[],[],[],[],[]
+        mb_obs2 = []
         mb_states = self.states
         epinfos = []
         for _ in range(self.nsteps):
-            actions, values, self.states, neglogpacs = self.model.step(self.obs, self.states, self.dones)
+            actions, values, self.states, neglogpacs = self.model.step(self.obs, self.obs2, self.states, self.dones)
             mb_obs.append(self.obs.copy())
+            mb_obs2.append(self.obs2.copy())
             mb_actions.append(actions)
             mb_values.append(values)
             mb_neglogpacs.append(neglogpacs)
             mb_dones.append(self.dones)
-            self.obs[:], rewards, self.dones, infos = self.env.step(actions)
+
+            tmp, rewards, self.dones, infos = self.env.step(actions)
+            self.obs[:] = tmp[:, 0].tolist()
+            self.obs2[:] = tmp[:, 1].tolist()
+
             for info in infos:
                 maybeepinfo = info.get('episode')
                 if maybeepinfo: epinfos.append(maybeepinfo)
             mb_rewards.append(rewards)
         #batch of steps to batch of rollouts
         mb_obs = np.asarray(mb_obs, dtype=self.obs.dtype)
+        mb_obs2 = np.asarray(mb_obs2, dtype=self.obs.dtype)
         mb_rewards = np.asarray(mb_rewards, dtype=np.float32)
         mb_actions = np.asarray(mb_actions)
         mb_values = np.asarray(mb_values, dtype=np.float32)
         mb_neglogpacs = np.asarray(mb_neglogpacs, dtype=np.float32)
         mb_dones = np.asarray(mb_dones, dtype=np.bool)
-        last_values = self.model.value(self.obs, self.states, self.dones)
+        last_values = self.model.value(self.obs, self.obs2, self.states, self.dones)
         #discount/bootstrap off value fn
         mb_returns = np.zeros_like(mb_rewards)
         mb_advs = np.zeros_like(mb_rewards)
@@ -173,6 +186,7 @@ class Runner(object):
         mb_returns = mb_advs + mb_values
         # mixup episodes
         ne = self.env.num_envs
+        # TODO: broken
         for _ in range(self.nmixup):
             w0 = np.random.beta(5, 1, size=(self.nsteps)).astype(np.float32)
             m0 = np.random.choice(ne, size=(self.nsteps, 2))
@@ -184,7 +198,10 @@ class Runner(object):
                 np.random.shuffle(i1)
                 np.random.shuffle(i2)
             wo = w0.reshape((-1, 1, 1, 1))
+
             mix_obs = np.asarray(wo * mb_obs[i1, m1] + (1 - wo) * mb_obs[i2, m2], dtype=self.obs.dtype)
+            mix_obs2 = np.asarray(wo * mb_obs2[i1, m1] + (1 - wo) * mb_obs2[i2, m2], dtype=self.obs.dtype)
+
             mix_returns = w0 * mb_returns[i1, m1] + (1 - w0) * mb_returns[i2, m2]
             m3 = np.select([w0 > 0.5, True], [m1, m2])
             i3 = np.select([w0 > 0.5, True], [i1, i2])
@@ -210,7 +227,7 @@ class Runner(object):
             mb_neglogpacs = np.concatenate((mb_neglogpacs, mix_neglogpacs[:,np.newaxis]), axis=1)
         # TODO: need to fegure out how to mixup rewards
         #mb_returns = mb_advs + mb_values
-        return (*map(sf01, (mb_obs, mb_returns, mb_dones, mb_actions, mb_values, mb_neglogpacs)),
+        return (*map(sf01, (mb_obs, mb_obs2, mb_returns, mb_dones, mb_actions, mb_values, mb_neglogpacs)),
             mb_states, epinfos)
 # obs, returns, masks, actions, values, neglogpacs, states = runner.run()
 
@@ -292,7 +309,7 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
         frac = 1.0 - (update - 1.0) / nupdates
         lrnow = lr(frac)
         cliprangenow = cliprange(frac)
-        obs, returns, masks, actions, values, neglogpacs, states, epinfos = runner.run() #pylint: disable=E0632
+        obs, obs2, returns, masks, actions, values, neglogpacs, states, epinfos = runner.run() #pylint: disable=E0632
         epinfobuf.extend(epinfos)
         mblossvals = []
         if not policy.recurrent: # nonrecurrent version
@@ -302,8 +319,9 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
                 for start in range(0, nbatch, nbatch_train):
                     end = start + nbatch_train
                     mbinds = inds[start:end]
-                    slices = (arr[mbinds] for arr in (obs, returns, masks, actions, values, neglogpacs))
+                    slices = (arr[mbinds] for arr in (obs, obs2, returns, masks, actions, values, neglogpacs))
                     mblossvals.append(model.train(lrnow, cliprangenow, *slices))
+        # TODO: broken
         else: # recurrent version
             # assert nenvs % nminibatches == 0
             envinds = np.arange(nenvs)

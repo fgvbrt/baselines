@@ -4,7 +4,7 @@ from baselines.a2c.utils import conv, fc, conv_to_fc, batch_to_seq, seq_to_batch
 from baselines.common.distributions import make_pdtype
 
 
-def nature_cnn(unscaled_images):
+def nature_cnn(unscaled_images, X2):
     """
     CNN from Nature paper.
     """
@@ -14,10 +14,11 @@ def nature_cnn(unscaled_images):
     h2 = activ(conv(h, 'c2', nf=64, rf=4, stride=2, init_scale=np.sqrt(2)))
     h3 = activ(conv(h2, 'c3', nf=64, rf=3, stride=1, init_scale=np.sqrt(2)))
     h3 = conv_to_fc(h3)
+    h3 = tf.concat([h3, X2], axis=1)
     return activ(fc(h3, 'fc1', nh=512, init_scale=np.sqrt(2)))
 
 
-def openai_cnn1(unscaled_images):
+def openai_cnn1(unscaled_images, X2):
     """
     CNN from Nature paper.
     """
@@ -28,10 +29,12 @@ def openai_cnn1(unscaled_images):
                        stride=2, pad='SAME', init_scale=np.sqrt(2)))
 
     h = conv_to_fc(h)
+    h = tf.concat([h, X2], axis=1)
+
     return activ(fc(h, 'fc1', nh=256, init_scale=np.sqrt(2)))
 
 
-def openai_cnn2(unscaled_images):
+def openai_cnn2(unscaled_images, X2):
     """
     CNN from Nature paper.
     """
@@ -42,6 +45,8 @@ def openai_cnn2(unscaled_images):
                        stride=2, pad='SAME', init_scale=np.sqrt(2)))
 
     h = conv_to_fc(h)
+    h = tf.concat([h, X2], axis=1)
+
     return activ(fc(h, 'fc1', nh=256, init_scale=np.sqrt(2)))
 
 
@@ -158,12 +163,18 @@ class CnnPolicy(object):
 
         cnn = get_cnn(cnn)
 
-        nh, nw, nc = ob_space.shape
+        # image
+        nh, nw, nc = ob_space[0].shape
         ob_shape = (nbatch, nh, nw, nc)
         nact = ac_space.n
         X = tf.placeholder(tf.uint8, ob_shape) #obs
+
+        # state
+        nf = ob_space[1].shape[0]
+        X2 = tf.placeholder(tf.float32, (nbatch, nf))
+
         with tf.variable_scope("model", reuse=reuse):
-            h = cnn(X)
+            h = cnn(X, X2)
             pi = fc(h, 'pi', nact, init_scale=0.01)
             vf = fc(h, 'v', 1)[:,0]
 
@@ -174,14 +185,15 @@ class CnnPolicy(object):
         neglogp0 = self.pd.neglogp(a0)
         self.initial_state = None
 
-        def step(ob, *_args, **_kwargs):
-            a, v, neglogp = sess.run([a0, vf, neglogp0], {X:ob})
+        def step(ob, ob2, *_args, **_kwargs):
+            a, v, neglogp = sess.run([a0, vf, neglogp0], {X:ob, X2:ob2})
             return a, v, self.initial_state, neglogp
 
-        def value(ob, *_args, **_kwargs):
-            return sess.run(vf, {X:ob})
+        def value(ob, ob2, *_args, **_kwargs):
+            return sess.run(vf, {X:ob, X2:ob2})
 
         self.X = X
+        self.X2 = X2
         self.pi = pi
         self.vf = vf
         self.step = step
