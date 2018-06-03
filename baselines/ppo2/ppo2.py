@@ -275,7 +275,6 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
             w_res = defaultdict(list)
             w_params = {}
 
-
     runner = Runner(env=env, model=model, nsteps=nsteps, gamma=gamma, lam=lam, nmixup=nmixup)
 
     epinfobuf = deque(maxlen=100)
@@ -357,11 +356,10 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
                 assert best_id is not None
 
                 # choose best weights
-                model.load_dict(w_params[best_id])
+                model.load_dict(w_params[best_id], adam_stats)
 
                 # do not enter in this block anymore
                 choose_weights = False
-
 
         lossvals = np.mean(mblossvals, axis=0)
         tnow = time.time()
