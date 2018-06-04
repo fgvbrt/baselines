@@ -53,7 +53,7 @@ def conv(x, scope, *, nf, rf, stride, pad='VALID', init_scale=1.0, data_format='
     nin = x.get_shape()[channel_ax].value
     wshape = [rf, rf, nin, nf]
     with tf.variable_scope(scope):
-        w = tf.get_variable("w", wshape, initializer=ortho_init(init_scale))
+        w = tf.get_variable("w", wshape, initializer=tf.variance_scaling_initializer(scale=init_scale, mode='fan_in'))
         b = tf.get_variable("b", [1, nf, 1, 1], initializer=tf.constant_initializer(0.0))
         if data_format == 'NHWC': b = tf.reshape(b, bshape)
         return b + tf.nn.conv2d(x, w, strides=strides, padding=pad, data_format=data_format)
@@ -61,7 +61,7 @@ def conv(x, scope, *, nf, rf, stride, pad='VALID', init_scale=1.0, data_format='
 def fc(x, scope, nh, *, init_scale=1.0, init_bias=0.0):
     with tf.variable_scope(scope):
         nin = x.get_shape()[1].value
-        w = tf.get_variable("w", [nin, nh], initializer=ortho_init(init_scale))
+        w = tf.get_variable("w", [nin, nh], initializer=tf.variance_scaling_initializer(scale=init_scale, mode='fan_in'))
         b = tf.get_variable("b", [nh], initializer=tf.constant_initializer(init_bias))
         return tf.matmul(x, w)+b
 
