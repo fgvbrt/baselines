@@ -119,31 +119,47 @@ class Model(object):
 
 class Runner(object):
 
-    def __init__(self, *, env, model, nsteps, gamma, lam, nmixup):
+    def __init__(self, *, env, models, nsteps, gamma, lam, nmixup):
         self.env = env
-        self.model = model
+        self.models = models
         nenv = env.num_envs
         self.obs = np.zeros((nenv,) + env.observation_space.shape, dtype=model.train_model.X.dtype.name)
         self.obs[:] = env.reset()
         self.gamma = gamma
         self.lam = lam
         self.nsteps = nsteps
-        self.states = model.initial_state
+        self.states = models[0].initial_state
         self.dones = [False for _ in range(nenv)]
         self.nmixup = nmixup
         self.mixup_time = True
+        self.n_models = len(models)
 
     def run(self):
-        mb_obs, mb_rewards, mb_actions, mb_values, mb_dones, mb_neglogpacs = [],[],[],[],[],[]
+        mb_obs, mb_rewards, mb_actions, mb_dones,  = [], [], [], []
+        mb_values,  mb_neglogpacs = [[]], [[]*self.n_models]
+
         mb_states = self.states
         epinfos = []
+
         for _ in range(self.nsteps):
-            actions, values, self.states, neglogpacs = self.model.step(self.obs, self.states, self.dones)
+
+            # iterate all models
+            actions_all_logs = []
+            for i, model in enumerate(self.models):
+                actions, actions_logs, values, self.states, neglogpacs = model.step(self.obs, self.states, self.dones)
+                mb_values[i].append(values)
+                mb_neglogpacs[i].append(neglogpacs)
+                actions_all_logs.append(actions)
+
+            def _sample_action():
+
+
+
+            # observations, actions and dones for all models same
             mb_obs.append(self.obs.copy())
             mb_actions.append(actions)
-            mb_values.append(values)
-            mb_neglogpacs.append(neglogpacs)
             mb_dones.append(self.dones)
+
             self.obs[:], rewards, self.dones, infos = self.env.step(actions)
             for info in infos:
                 maybeepinfo = info.get('episode')
