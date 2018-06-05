@@ -156,8 +156,11 @@ class Runner(object):
                 actions_all_logs.append(actions_logs[0])
                 actions_all_logs_lst[i].append(actions_logs[0])
 
-            actions_all_logs = np.exp(actions_all_logs)
-            actions_probs = np.mean(actions_all_logs, axis=0).ravel()
+            tmp = np.sum(actions_all_logs, axis=0)
+            tmp = tmp - max(tmp)
+            tmp = np.exp(tmp)
+            actions_probs = tmp / tmp.sum()
+            # actions_probs = np.mean(actions_all_logs, axis=0).ravel()
 
             actions = np.random.choice(len(actions_probs), p=actions_probs)
 
