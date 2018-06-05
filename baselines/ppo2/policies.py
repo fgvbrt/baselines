@@ -173,7 +173,7 @@ class CnnPolicy(object):
         a0 = self.pd.sample()
         neglogp0 = self.pd.neglogp(a0)
         self.initial_state = None
-        a_logs = tf.nn.log_softmax()
+        a_logs = tf.nn.log_softmax(pi)
 
         def step(ob, *_args, **_kwargs):
             a, _a_logs, v, neglogp = sess.run([a0, a_logs, vf, neglogp0], {X:ob})
