@@ -154,7 +154,7 @@ class CnnPolicy(object):
     recurrent = False
 
     def __init__(self, sess, ob_space, ac_space, nbatch, nsteps, reuse=False,
-                 cnn='nature'): #pylint: disable=W0613
+                 cnn='nature', model_name='model'):
 
         cnn = get_cnn(cnn)
 
@@ -162,7 +162,7 @@ class CnnPolicy(object):
         ob_shape = (nbatch, nh, nw, nc)
         nact = ac_space.n
         X = tf.placeholder(tf.uint8, ob_shape) #obs
-        with tf.variable_scope("model", reuse=reuse):
+        with tf.variable_scope(model_name, reuse=reuse):
             h = cnn(X)
             pi = fc(h, 'pi', nact, init_scale=0.01)
             vf = fc(h, 'v', 1)[:,0]

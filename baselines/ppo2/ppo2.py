@@ -12,11 +12,11 @@ from collections import defaultdict
 
 class Model(object):
     def __init__(self, *, policy, ob_space, ac_space, nbatch_act, nbatch_train,
-                nsteps, ent_coef, vf_coef, max_grad_norm, cnn):
+                nsteps, ent_coef, vf_coef, max_grad_norm, cnn, model_name):
         sess = tf.get_default_session()
 
-        act_model = policy(sess, ob_space, ac_space, nbatch_act, 1, reuse=False, cnn=cnn)
-        train_model = policy(sess, ob_space, ac_space, nbatch_train, nsteps, reuse=True, cnn=cnn)
+        act_model = policy(sess, ob_space, ac_space, nbatch_act, 1, reuse=False, cnn=cnn, model_name=model_name)
+        train_model = policy(sess, ob_space, ac_space, nbatch_train, nsteps, reuse=True, cnn=cnn, model_name=model_name)
 
         A = train_model.pdtype.sample_placeholder([None])
         ADV = tf.placeholder(tf.float32, [None])
@@ -42,7 +42,7 @@ class Model(object):
         approxkl = .5 * tf.reduce_mean(tf.square(neglogpac - OLDNEGLOGPAC))
         clipfrac = tf.reduce_mean(tf.to_float(tf.greater(tf.abs(ratio - 1.0), CLIPRANGE)))
         loss = pg_loss - entropy * ent_coef + vf_loss * vf_coef
-        with tf.variable_scope('model'):
+        with tf.variable_scope(model_name):
             params = tf.trainable_variables()
         grads = tf.gradients(loss, params)
         if max_grad_norm is not None:
@@ -120,21 +120,20 @@ class Model(object):
 
 class Runner(object):
 
-    def __init__(self, *, env, model, nsteps, gamma, lam, nmixup, weights):
+    def __init__(self, *, env, models, nsteps, gamma, lam, nmixup):
         self.env = env
-        self.weights = weights
-        self.model = model
+        self.models = models
         nenv = env.num_envs
-        self.obs = np.zeros((nenv,) + env.observation_space.shape, dtype=model.train_model.X.dtype.name)
+        self.obs = np.zeros((nenv,) + env.observation_space.shape, dtype=models[0].train_model.X.dtype.name)
         self.obs[:] = env.reset()
         self.gamma = gamma
         self.lam = lam
         self.nsteps = nsteps
-        self.states = model.initial_state
+        self.states = models[0].initial_state
         self.dones = [False for _ in range(nenv)]
         self.nmixup = nmixup
         self.mixup_time = True
-        self.n_models = len(weights)
+        self.n_models = len(models)
 
     def run(self):
         mb_obs, mb_rewards, mb_actions, mb_dones,  = [], [], [], []
@@ -149,9 +148,8 @@ class Runner(object):
 
             # iterate all models
             actions_all_logs = []
-            for i, w in enumerate(self.weights):
-                self.model.load_dict(w, 'all')
-                actions, actions_logs, values, self.states, neglogpacs = self.model.step(self.obs, self.states, self.dones)
+            for i, m in enumerate(self.models):
+                actions, actions_logs, values, self.states, neglogpacs = m.step(self.obs, self.states, self.dones)
 
                 # имеют values,  actions, actions_logs первый shape имеют 1
                 mb_values_lst[i].append(values[0])
@@ -187,9 +185,8 @@ class Runner(object):
 
         # shape (n_models, 1)
         last_values_lst = []
-        for w in self.weights:
-            self.model.load_dict(w, 'all')
-            last_values_lst.append(self.model.value(self.obs, self.states, self.dones)[0])
+        for m in self.models:
+            last_values_lst.append(m.value(self.obs, self.states, self.dones)[0])
 
         # this is one, per model
         # shape (n_models, n_steps,)
@@ -278,24 +275,21 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
 
     logger.info("batch size: {}".format(nbatch_train))
 
-    make_model = lambda : Model(
-        policy=policy, ob_space=ob_space, ac_space=ac_space, nbatch_act=nenvs,
-        nbatch_train=nbatch_train, nsteps=nsteps, ent_coef=ent_coef,
-        vf_coef=vf_coef, max_grad_norm=max_grad_norm, cnn=cnn)
+    models = []
+    for i, w in enumerate(weights_path):
+        make_model = lambda: Model(
+            policy=policy, ob_space=ob_space, ac_space=ac_space, nbatch_act=nenvs,
+            nbatch_train=nbatch_train, nsteps=nsteps, ent_coef=ent_coef,
+            vf_coef=vf_coef, max_grad_norm=max_grad_norm, cnn=cnn, model_name='model_{}'.format(i))
 
-    model = make_model()
-    weights = []
-    for w in weights_path:
+        model = make_model()
         model.load(w, adam_stats)
-        weights.append(model.get_params())
-
-
+        models.append(model)
 
     # if save_interval and logger.get_dir():
     #     import cloudpickle
     #     with open(osp.join(logger.get_dir(), 'make_model.pkl'), 'wb') as fh:
     #         fh.write(cloudpickle.dumps(make_model))
-
 
 
     # cur_w = 0
@@ -310,7 +304,7 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
     #         w_res = defaultdict(list)
     #         w_params = {}
 
-    runner = Runner(env=env, model=model, nsteps=nsteps, gamma=gamma, lam=lam, nmixup=nmixup, weights=weights)
+    runner = Runner(env=env, models=models, nsteps=nsteps, gamma=gamma, lam=lam, nmixup=nmixup)
 
     epinfobuf = deque(maxlen=100)
     tfirststart = time.time()
@@ -338,13 +332,10 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
                     mbinds = inds[start:end]
 
                     # TODO: may be optimize loops
-                    for i, w in enumerate(weights):
-                        model.load_dict(w, "all")
+                    for i, m in enumerate(models):
                         slices = (arr[mbinds] for arr in
                                   (obs, returns[i], masks, actions, values[i], neglogpacs[i], mb_weights[i]))
-                        mblossvals.append(model.train(lrnow, cliprangenow, *slices))
-                        # save trained weights
-                        weights[i] = model.get_params()
+                        mblossvals.append(m.train(lrnow, cliprangenow, *slices))
 
         else: # recurrent version
             # assert nenvs % nminibatches == 0
